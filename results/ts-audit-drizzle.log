@@ -1,0 +1,16 @@
+10 |       if (isServerConfig(entryNamespace?.default))  {
+11 |         const server = Bun.serve(entryNamespace.default);
+12 |         console.debug(`Started ${server.development ? 'development ' : ''}server: ${server.protocol}://${server.hostname}:${server.port}`);
+13 |       }
+14 |    }, reportError);
+15 |    const server = Bun.serve(entryNamespace.default);
+     ^
+error: Failed to start server. Is port 8091 in use?
+ syscall: "listen",
+   errno: 0,
+    code: "EADDRINUSE"
+
+      at bun:main:15:28
+      at loadAndEvaluateModule (2:1)
+
+Bun v1.3.13 (Linux x64)

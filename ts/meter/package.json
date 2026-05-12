@@ -1,0 +1,11 @@
+{
+  "name": "bench-meter-ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "postgres": "^3.4.5"
+  }
+}
