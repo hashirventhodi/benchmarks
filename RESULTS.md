@@ -7,11 +7,12 @@ the language stack — they are NOT representative of Cloud Run absolute through
 
 ## TL;DR
 
-| Workload  | Winner                           | Margin vs raw Bun.sql       |
-|-----------|----------------------------------|-----------------------------|
-| Audit POST| Go + chi + sqlc + pgx (6 853 rps)| **1.70× raw Bun.sql**       |
-| SSE 5k    | Go net/http (40% less RAM)       | Equal throughput            |
-| Meter     | Go + pgx (104k/s, 16 MB)         | **1.34× throughput, 5× RAM**|
+| Workload         | Winner                              | Margin vs raw Bun.sql        |
+|------------------|-------------------------------------|------------------------------|
+| Audit POST       | Go + chi + sqlc + pgx (6 853 rps)   | **1.70× raw Bun.sql**        |
+| Audit POST +auth | Go + chi + pgx + RLS (4 578 rps)    | **1.75× raw Bun.sql + RLS**  |
+| SSE 5k           | Go net/http (40% less RAM)          | Equal throughput             |
+| Meter            | Go + pgx (104k/s, 16 MB)            | **1.34× throughput, 5× RAM** |
 
 **Key findings:**
 
@@ -27,6 +28,11 @@ the language stack — they are NOT representative of Cloud Run absolute through
    raw-bytes pattern. It's not "Go but faster" — it's "Go but cheaper to
    run if the team can ship Rust." For a 24/7 worker that bills RAM-hours
    it's the most economical option in the table.
+6. **Auth + RLS does NOT compress the language gap.** Adding session
+   lookup, permission check, GUC sets, and RLS-policy evaluation to every
+   request costs a roughly constant ~30% throughput across all three
+   stacks. The "language won't matter once auth dominates" argument is
+   wrong — Go's lead over Bun.sql actually widens slightly (1.70× → 1.75×).
 
 ## Workload 1 — Audit write (POST /audit)
 
@@ -98,6 +104,47 @@ internal SQL module initialization; subsequent runs would amortize that.
   agents."
 - Cold start is a wash locally. Cloud Run cold-start delta will favor Go but the
   effect isn't visible at loopback.
+
+## Workload 1b — Audit write WITH auth + RLS
+
+The realistic Steloit hot path adds, per request, before the audit insert:
+
+1. Bearer-token session lookup (1 DB query)
+2. Membership + permission check (1 DB query)
+3. GUC set for RLS (`set_config('app.user_id', ...)` + `set_config('app.organization_id', ...)`) (1 round trip, multi-result)
+4. RLS-protected last-hash query (same query as before, but Postgres now enforces the policy)
+5. RLS-protected insert
+
+Three extra DB round trips + two RLS-policy-evaluated statements. This is the
+single most important comparison in the bench because it mirrors what the
+production API actually does.
+
+| Stack                       | RPS      | p50      | p95      | max      | RSS    | Drop vs no-auth |
+|-----------------------------|---------:|---------:|---------:|---------:|-------:|----------------:|
+| **Go** — chi + pgx + RLS    | **4 578**| **21.3 ms** | **33.9 ms** | 118 ms | 27 MB | −33%            |
+| **Rust** — Axum + sqlx + RLS| **4 021**| 24.4 ms  | 37.1 ms  | 91 ms    | **16 MB** | −29%        |
+| **Bun.sql** + RLS           | **2 621**| 36.9 ms  | 52.8 ms  | 114 ms   | 128 MB | −35%            |
+
+**The headline finding:** the language gap **does not compress** when auth is
+in the path. Going in I expected it would, because auth is DB-bound — adding
+fixed-cost round trips should level the playing field. It didn't:
+
+- Go's lead over Bun.sql: 1.70× without auth → **1.75× with auth**.
+- Rust closes slightly: 0.83× of Go → **0.88×**.
+- Drop percentages are tightly clustered (29–35%), meaning each language pays
+  roughly the same auth tax. The Postgres-side cost is constant; the
+  language-side cost remains proportional.
+
+**Why this matters:** the "but auth will dominate, language won't matter" argument
+some teams use to defend the slower stack is **not supported by this data**. If
+anything, Go's per-request overhead is so small that it absorbs the auth cost
+better than Bun does.
+
+**Memory under auth load:** Rust drops to 16 MB (the table's best) because the
+GUC/session-lookup pattern doesn't allocate; Bun.sql stays at 128 MB; Go's 27 MB
+is unchanged. For a Cloud Run instance at 256 MB, Bun.sql leaves ~120 MB
+headroom for everything else (auth caches, MCP buffers, request peaks) — a
+tighter squeeze than the no-auth numbers suggest.
 
 ## Workload 2 — SSE fan-out (5 000 concurrent connections)
 
@@ -209,10 +256,10 @@ audit number.
 
 ## What this bench doesn't measure
 
-- **Auth + RLS overhead.** Steloit's real audit hot path goes through
-  Better-Auth session resolution, RLS GUC `set_config` per tx, and
-  `hasPermission` evaluation. None of that is here. That overhead is the
-  same in both stacks (it's all Postgres + crypto).
+- ~~**Auth + RLS overhead.**~~ — **Added in Workload 1b.** The realistic
+  hot path with session lookup + membership check + GUCs + RLS is now in the
+  table for the top 3 stacks. Headline: language gap is preserved, not
+  compressed.
 - **Cold start on Cloud Run.** Loopback hides container start. Real number
   for Go: ~50 ms. For Bun: ~250–400 ms.
 - **Connection storms.** Tests run with warm pools.
@@ -235,7 +282,10 @@ audit number.
   advantage that compounds over time.
 - For ergonomics, TS wins on LOC by ~50%. Drizzle is the worst choice in TS.
 
-**What I'd actually do, post-bench (revised after Bun.sql + GORM results):**
+**What I'd actually do, post-bench (final, after auth+RLS pass):**
+
+The auth+RLS test confirmed the recommendation rather than changing it. The
+language gap is preserved through the realistic hot path. So:
 
 1. **Stay on Hono + Bun for `apps/api` and `apps/mcp`.** The throughput is
    fine for alpha and the LOC + shared-types story is real.
@@ -278,6 +328,7 @@ docker exec -i bench-pg psql -U bench -d bench < schema.sql
 
 # Build Go
 (cd go/audit       && go build -o /tmp/bench-go-audit .)
+(cd go/audit-auth  && go build -o /tmp/bench-go-audit-auth .)
 (cd go/audit-gorm  && go build -o /tmp/bench-go-audit-gorm .)
 (cd go/stream      && go build -o /tmp/bench-go-stream .)
 (cd go/stream-gin  && go build -o /tmp/bench-go-stream-gin .)
@@ -286,9 +337,10 @@ docker exec -i bench-pg psql -U bench -d bench < schema.sql
 (cd bench          && go build -o /tmp/bench-sse-client sse-client.go)
 
 # Build Rust (release, ~2-3 min cold)
-(cd rust/audit  && cargo build --release && cp target/release/bench-audit  /tmp/bench-rust-audit)
-(cd rust/stream && cargo build --release && cp target/release/bench-stream /tmp/bench-rust-stream)
-(cd rust/meter  && cargo build --release && cp target/release/bench-meter  /tmp/bench-rust-meter)
+(cd rust/audit       && cargo build --release && cp target/release/bench-audit       /tmp/bench-rust-audit)
+(cd rust/audit-auth  && cargo build --release && cp target/release/bench-audit-auth  /tmp/bench-rust-audit-auth)
+(cd rust/stream      && cargo build --release && cp target/release/bench-stream      /tmp/bench-rust-stream)
+(cd rust/meter       && cargo build --release && cp target/release/bench-meter       /tmp/bench-rust-meter)
 
 # Install TS
 for d in ts/audit-pg ts/audit-postgresjs ts/audit-drizzle ts/stream ts/meter; do
@@ -304,6 +356,12 @@ done
 ./bench/run-audit.sh ts-audit-drizzle-bunsql 8096 bun run ts/audit-drizzle-bunsql/src/index.ts
 ./bench/run-audit.sh go-audit-gorm           8084 /tmp/bench-go-audit-gorm
 ./bench/run-audit.sh rust-audit              8085 /tmp/bench-rust-audit
+
+# Audit + auth + RLS (after loading auth-schema.sql)
+docker exec -i bench-pg psql -U bench -d bench < auth-schema.sql
+./bench/run-audit-auth.sh go-audit-auth       9081 /tmp/bench-go-audit-auth
+./bench/run-audit-auth.sh rust-audit-auth     9085 /tmp/bench-rust-audit-auth
+./bench/run-audit-auth.sh ts-audit-auth-bunsql 9095 bun run ts/audit-auth-bunsql/src/index.ts
 
 # Stream (each ~30s, holds 5000 conns)
 ./bench/run-stream.sh go-stream     8182 5000 20 /tmp/bench-go-stream
