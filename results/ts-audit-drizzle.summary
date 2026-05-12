@@ -1,3 +1,3 @@
-peak_rss_mb=147
-peak_rss_kb=151076
-cold_start_ms=16
+peak_rss_mb=143
+peak_rss_kb=146716
+cold_start_ms=69

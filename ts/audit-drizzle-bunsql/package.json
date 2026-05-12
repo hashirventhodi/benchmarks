@@ -1,5 +1,5 @@
 {
-  "name": "bench-audit-drizzle",
+  "name": "bench-audit-drizzle-bunsql",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,7 +7,6 @@
   },
   "dependencies": {
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.6.0",
-    "postgres": "^3.4.5"
+    "hono": "^4.6.0"
   }
 }
