@@ -1,0 +1,11 @@
+{
+  "name": "bench-audit-bunsql",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "bun run src/index.ts"
+  },
+  "dependencies": {
+    "hono": "^4.6.0"
+  }
+}
