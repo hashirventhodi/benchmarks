@@ -22,6 +22,11 @@ the language stack — they are NOT representative of Cloud Run absolute through
    strategically critical result: if the Go rewrite uses GORM (most teams
    do), the rewrite buys you nothing on throughput.
 4. **The real perf gradient is "ORM vs no-ORM," not "Go vs TS."**
+5. **Rust+sqlx is close to Go on throughput (83%) and best-in-class on
+   memory** (14 MB API, 8 MB worker) once the JSON-handling matches Go's
+   raw-bytes pattern. It's not "Go but faster" — it's "Go but cheaper to
+   run if the team can ship Rust." For a 24/7 worker that bills RAM-hours
+   it's the most economical option in the table.
 
 ## Workload 1 — Audit write (POST /audit)
 
@@ -37,6 +42,23 @@ inserts into `audit_entries`, commits. 100 concurrent virtual users, 30s.
 | Bun + Hono + `postgres.js`                  | 2 463  | 38.7 ms  | 60.7 ms  | 179 ms   | 132 MB | 13 ms      | 53               |
 | **Bun + Hono + Drizzle on `Bun.sql`**       | 1 960  | 49.3 ms  | 71.1 ms  | 110 ms   | 127 MB | 13 ms      | 95               |
 | Bun + Hono + Drizzle on `postgres.js`       | 1 183  | 82.1 ms  | 116.0 ms | 208 ms   | 143 MB | 69 ms      | 94               |
+| **Rust + Axum + sqlx**                      | **5 674**  | **16.9 ms** | **25.0 ms** | 83 ms   | **14 MB** | 138 ms  | 111              |
+
+**Rust commentary:** Rust + Axum + sqlx lands at **5 674 RPS** — within 17%
+of Go's raw-pgx number on throughput, **identical p95 (25 ms)**, and **half
+the RAM (14 MB vs 26 MB)**. Tighter tail than Go (max 83 ms vs 104 ms).
+
+**Important methodology note:** the first run of this variant came in at
+2 763 RPS with a 331 ms tail. Root cause: my Rust handler parsed the JSON
+payload into `serde_json::Value` and then re-serialized it twice (once for
+the SHA-256 chain, once for the DB bind). Go's handler uses `json.RawMessage`
+which keeps the original body bytes and reuses them for both. After switching
+Rust to `Box<RawValue>` (the equivalent of `RawMessage`), throughput
+**doubled** and tail latency dropped 4×. The 2 763 number is preserved in
+git history as a cautionary tale — small API choices in the request struct
+matter more than language choice on hot paths. Bun.sql still does the
+parse-and-reserialize dance (same as the original Rust); if it adopted
+the same raw-bytes pattern it would likely close further toward Go.
 
 **The GORM result is the most strategically important finding in this whole
 bench.** Go + GORM (3 406 RPS) is **slower than raw Bun.sql** (4 030 RPS).
@@ -84,9 +106,17 @@ Server holds N SSE clients, broadcasts a tick once per second. Client opens
 
 | Stack                | Sustained conns | Events delivered | Failed | RSS     |
 |----------------------|----------------:|-----------------:|-------:|--------:|
-| **Go** — net/http    | 5 000           | 86 057           | 0      | **137 MB** |
+| **Rust + Axum**      | 5 000           | 86 826           | 0      | **104 MB** |
+| Go — net/http        | 5 000           | 86 057           | 0      | 137 MB |
 | Go — Gin             | 4 999           | 86 725           | 0      | 144 MB |
 | Bun + Hono streamSSE | 4 997           | 86 948           | 0      | 191 MB |
+
+**Rust stream commentary:** Rust sustains 5 000 connections cleanly (no
+drops, no failed), delivers the same event count as the others (bottlenecked
+on the 1-Hz tick, not the runtime), and uses **24% less memory than Go,
+46% less than Bun**. Tokio's per-task overhead is genuinely smaller than
+goroutines for this idle-waiting-for-broadcast pattern. This is the most
+unambiguous Rust win in the matrix.
 
 **Gin commentary:** statistically identical to raw `net/http` for this
 workload — same connection count, same event throughput, 5% more memory
@@ -112,10 +142,18 @@ empty queue.
 
 | Stack                 | Elapsed | Throughput   | RSS   |
 |-----------------------|--------:|-------------:|------:|
-| **Go** — pgx          | 957 ms  | **104 493/s**| **16 MB** |
-| **Go** — GORM         | 1 340 ms| 74 626/s     | **17 MB** |
+| **Go** — pgx          | 957 ms  | **104 493/s**| 16 MB |
+| **Rust** — sqlx       | 1 020 ms| **98 039/s** | **8 MB** |
+| **Go** — GORM         | 1 340 ms| 74 626/s     | 17 MB |
 | Bun + `Bun.sql`       | 1 287 ms| 77 700/s     | 74 MB |
 | Bun + `postgres.js`   | 1 307 ms| 76 511/s     | 102 MB |
+
+**Rust meter commentary:** the inverse of the audit result. Rust+sqlx on the
+worker workload roughly matches Go raw (98k vs 104k/s — 94%) while using
+**half the RAM (8 MB vs 16 MB)** and a quarter of TS (vs 74–102 MB). For a
+24/7 worker where every MB-month costs real money, Rust is the most
+economical option in the table — *if* the team can write idiomatic async
+Rust. That's the catch, not the perf.
 
 **GORM meter commentary:** the ORM tax hits the worker too — 29% throughput
 drop vs raw pgx (104k → 75k events/s). But here's the twist: **Go+GORM
@@ -136,10 +174,13 @@ long-lived: you pay for that memory all month, not just per-request.
 |-----------------------------|----:|--------------------------------------------------|
 | Go audit (chi + sqlc + pgx) | 144 | Plus 134 generated by sqlc                       |
 | Go audit-gorm (Gin + GORM)  | 130 | No codegen; struct tags do the schema mapping    |
+| Rust audit (Axum + sqlx)    | 111 | Uses `Box<RawValue>` to match Go's RawMessage    |
 | Go meter (raw pgx)          | 162 |                                                  |
 | Go meter-gorm               | 158 | GORM clauses for SKIP LOCKED + upsert            |
+| Rust meter (sqlx)           | 137 | Tokio worker pattern + sqlx; very clean          |
 | Go stream (net/http)        | 105 |                                                  |
 | Go stream-gin               | 105 | Same logic, Gin's `c.Stream` for loop semantics  |
+| Rust stream (Axum)          |  96 | broadcast channel + BroadcastStream; tightest    |
 | TS audit-drizzle (pgjs)     | 94  | Includes 29-line schema.ts                       |
 | TS audit-drizzle (Bun.sql)  | 95  | Same schema, one-line driver swap                |
 | TS audit-pg                 | 57  |                                                  |
@@ -203,11 +244,11 @@ audit number.
    Closes the gap to Go from 5.6× to 1.7× on the audit hot path. (If a full
    Drizzle removal is too disruptive, at minimum switch Drizzle's driver to
    `drizzle-orm/bun-sql` — free 66% RPS for a one-line config change.)
-3. **Write the metering worker in Go.** Even GORM keeps the memory advantage
-   (17 MB vs 74–102 MB on TS), so the ORM-vs-raw choice matters less here
-   than on the API. Use raw pgx if you want the 1.34× throughput on top;
-   use GORM if it lowers the friction of writing the worker. Either way,
-   Go wins on the dimension that compounds (RAM × hours × months).
+3. **Write the metering worker in Go (or Rust, if the team can).** Go is
+   the safe choice — 16 MB RAM, 104k/s, broad hiring pool. Rust is the
+   *cheapest* choice — 8 MB RAM, 98k/s — but only if there's a Rust
+   speaker on the team. Either way, **don't run the worker on Bun**:
+   74–102 MB for a process that lives forever is a real monthly bill.
 4. **Do NOT rewrite the API in Go *with GORM*.** This is the new, important
    finding: Go+GORM is slower than raw Bun.sql. A rewrite that lands on
    the popular ORM is a quarter of work for a *negative* throughput result.
@@ -244,6 +285,11 @@ docker exec -i bench-pg psql -U bench -d bench < schema.sql
 (cd go/meter-gorm  && go build -o /tmp/bench-go-meter-gorm .)
 (cd bench          && go build -o /tmp/bench-sse-client sse-client.go)
 
+# Build Rust (release, ~2-3 min cold)
+(cd rust/audit  && cargo build --release && cp target/release/bench-audit  /tmp/bench-rust-audit)
+(cd rust/stream && cargo build --release && cp target/release/bench-stream /tmp/bench-rust-stream)
+(cd rust/meter  && cargo build --release && cp target/release/bench-meter  /tmp/bench-rust-meter)
+
 # Install TS
 for d in ts/audit-pg ts/audit-postgresjs ts/audit-drizzle ts/stream ts/meter; do
   (cd $d && bun install)
@@ -257,15 +303,18 @@ done
 ./bench/run-audit.sh ts-audit-bunsql         8095 bun run ts/audit-bunsql/src/index.ts
 ./bench/run-audit.sh ts-audit-drizzle-bunsql 8096 bun run ts/audit-drizzle-bunsql/src/index.ts
 ./bench/run-audit.sh go-audit-gorm           8084 /tmp/bench-go-audit-gorm
+./bench/run-audit.sh rust-audit              8085 /tmp/bench-rust-audit
 
 # Stream (each ~30s, holds 5000 conns)
 ./bench/run-stream.sh go-stream     8182 5000 20 /tmp/bench-go-stream
 ./bench/run-stream.sh go-stream-gin 8183 5000 20 /tmp/bench-go-stream-gin
 ./bench/run-stream.sh ts-stream     8194 5000 20 bun run ts/stream/src/index.ts
+./bench/run-stream.sh rust-stream   8285 5000 20 /tmp/bench-rust-stream
 
 # Meter (each ~5s)
 ./bench/run-meter.sh go-meter        /tmp/bench-go-meter
 ./bench/run-meter.sh go-meter-gorm   /tmp/bench-go-meter-gorm
+./bench/run-meter.sh rust-meter      /tmp/bench-rust-meter
 ./bench/run-meter.sh ts-meter        bun run ts/meter/src/index.ts
 ./bench/run-meter.sh ts-meter-bunsql bun run ts/meter-bunsql/src/index.ts
 ```

@@ -1,6 +1,10 @@
 # Dependencies
 node_modules/
 
+# Rust build artifacts
+target/
+**/target/
+
 # Build artifacts (Go binaries are written to /tmp, not here, but just in case)
 /go/audit/audit
 /go/stream/stream
