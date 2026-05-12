@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build artifacts (Go binaries are written to /tmp, not here, but just in case)
+/go/audit/audit
+/go/stream/stream
+/go/meter/meter
+*.exe
+
+# OS / editor noise
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Local-only env overrides
+.env
+.env.local
