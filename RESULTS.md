@@ -7,24 +7,21 @@ the language stack — they are NOT representative of Cloud Run absolute through
 
 ## TL;DR
 
-| Workload  | Go winner-margin           | TS (best variant)       | TS (production stack)   |
-|-----------|----------------------------|-------------------------|-------------------------|
-| Audit POST| **1.7× RPS vs Bun.sql, 5.8× vs Drizzle/pgjs** | **Bun.sql (4 030 rps)** | Drizzle on Bun.sql (1 960 rps) |
-| SSE 5k    | **40% less memory, equal** | Bun+Hono (191 MB)       | same                    |
-| Meter     | **1.34× throughput, 5× less RAM** | Bun.sql (77.7k/s, 74 MB) | postgres.js (77k/s, 102 MB) |
+| Workload  | Winner                           | Margin vs raw Bun.sql       |
+|-----------|----------------------------------|-----------------------------|
+| Audit POST| Go + chi + sqlc + pgx (6 853 rps)| **1.70× raw Bun.sql**       |
+| SSE 5k    | Go net/http (40% less RAM)       | Equal throughput            |
+| Meter     | Go + pgx (104k/s, 16 MB)         | **1.34× throughput, 5× RAM**|
 
-**Three findings:**
+**Key findings:**
 
-1. **Bun.sql is the fastest TS option.** 1.4× faster than `pg`, 1.6× faster than
-   `postgres.js`, 3.3× faster than Drizzle-on-postgres.js. Tightest latency
-   tail (max 68 ms vs 125–209 ms).
-2. **Drizzle's ORM overhead is ~2× regardless of driver.** Swapping Drizzle's
-   driver from postgres.js to Bun.sql jumps it from 1 183 → 1 960 RPS (+66%),
-   but raw Bun.sql gets 4 030 RPS — so the ORM layer alone costs about half
-   the throughput.
-3. **If you want to keep Drizzle, use the `bun-sql` driver.** It's a 66%
-   speedup for a one-line config change. But the bigger win is dropping
-   Drizzle entirely.
+1. **Bun.sql is the fastest TS option** and the only one that approaches Go.
+2. **ORM overhead is roughly 2× in either language.** Drizzle on its best
+   driver: 49% of raw Bun.sql. GORM: 50% of raw Go.
+3. **Go+ORM (GORM) is *slower* than TS-without-ORM (Bun.sql).** This is the
+   strategically critical result: if the Go rewrite uses GORM (most teams
+   do), the rewrite buys you nothing on throughput.
+4. **The real perf gradient is "ORM vs no-ORM," not "Go vs TS."**
 
 ## Workload 1 — Audit write (POST /audit)
 
@@ -33,12 +30,25 @@ inserts into `audit_entries`, commits. 100 concurrent virtual users, 30s.
 
 | Stack                                       | RPS    | p50      | p95      | max      | RSS    | Cold start | Hand-written LOC |
 |---------------------------------------------|--------|----------|----------|----------|--------|-----------:|-----------------:|
-| **Go** — chi + sqlc + pgx                   | **6 853** | **13.4 ms** | **25.4 ms** | 104 ms   | **26 MB** | 14 ms      | 144 (+134 generated) |
+| **Go** — chi + sqlc + pgx (no ORM)          | **6 853** | **13.4 ms** | **25.4 ms** | 104 ms   | **26 MB** | 14 ms      | 144 (+134 generated) |
 | **Bun + Hono + `Bun.sql`** (native, no ORM) | **4 030**  | **24.0 ms** | **34.7 ms** | **68 ms** | 116 MB | 79 ms      | **55**           |
+| **Go + Gin + GORM** (Go's most popular ORM) | **3 406** | 24.8 ms | 60.7 ms | 210 ms | **34 MB** | 81 ms | 130 |
 | Bun + Hono + `pg`                           | 2 826  | 33.5 ms  | 51.4 ms  | 125 ms   | 108 MB | 11 ms      | 57               |
 | Bun + Hono + `postgres.js`                  | 2 463  | 38.7 ms  | 60.7 ms  | 179 ms   | 132 MB | 13 ms      | 53               |
 | **Bun + Hono + Drizzle on `Bun.sql`**       | 1 960  | 49.3 ms  | 71.1 ms  | 110 ms   | 127 MB | 13 ms      | 95               |
 | Bun + Hono + Drizzle on `postgres.js`       | 1 183  | 82.1 ms  | 116.0 ms | 208 ms   | 143 MB | 69 ms      | 94               |
+
+**The GORM result is the most strategically important finding in this whole
+bench.** Go + GORM (3 406 RPS) is **slower than raw Bun.sql** (4 030 RPS).
+The Go performance advantage you'd be buying with a rewrite *evaporates* if
+the team reaches for the popular ORM. GORM is to Go what Drizzle is to TS:
+roughly a 2× tax on top of the raw driver, regardless of language. Memory
+stays Go-cheap (34 MB) but the throughput edge is gone.
+
+This matters because "we'll rewrite in Go" almost always means "we'll write
+Go *and* reach for an ORM because writing raw SQL through pgx is verbose."
+At which point you've spent a quarter rewriting and ended up *slower than*
+the TS option that doesn't have an ORM at all.
 
 **Drizzle-on-Bun.sql commentary:** changing only the driver underneath
 Drizzle (postgres.js → Bun.sql) yields **+66% RPS** (1 183 → 1 960). But
@@ -75,7 +85,14 @@ Server holds N SSE clients, broadcasts a tick once per second. Client opens
 | Stack                | Sustained conns | Events delivered | Failed | RSS     |
 |----------------------|----------------:|-----------------:|-------:|--------:|
 | **Go** — net/http    | 5 000           | 86 057           | 0      | **137 MB** |
+| Go — Gin             | 4 999           | 86 725           | 0      | 144 MB |
 | Bun + Hono streamSSE | 4 997           | 86 948           | 0      | 191 MB |
+
+**Gin commentary:** statistically identical to raw `net/http` for this
+workload — same connection count, same event throughput, 5% more memory
+from Gin's larger transitive deps (Sonic, validator). Framework choice on
+the Go side is essentially irrelevant for SSE fan-out; the runtime + GC
+do the work.
 
 **This is the result that surprised me.** Going in I expected Go to handle 5k
 SSE trivially and Bun to flounder. It didn't. Bun + Hono sustained 5k concurrent
@@ -96,11 +113,17 @@ empty queue.
 | Stack                 | Elapsed | Throughput   | RSS   |
 |-----------------------|--------:|-------------:|------:|
 | **Go** — pgx          | 957 ms  | **104 493/s**| **16 MB** |
-| Bun + `Bun.sql`       | 1 287 ms| 77 700/s     | **74 MB** |
+| **Go** — GORM         | 1 340 ms| 74 626/s     | **17 MB** |
+| Bun + `Bun.sql`       | 1 287 ms| 77 700/s     | 74 MB |
 | Bun + `postgres.js`   | 1 307 ms| 76 511/s     | 102 MB |
 
-Bun.sql ties postgres.js on throughput but uses **28% less memory** for the
-long-running worker — the metric that matters most for a 24/7 process.
+**GORM meter commentary:** the ORM tax hits the worker too — 29% throughput
+drop vs raw pgx (104k → 75k events/s). But here's the twist: **Go+GORM
+still beats both TS variants on RAM by 4–6×** (17 MB vs 74–102 MB), while
+roughly matching them on throughput. For a 24/7 worker that bills RAM per
+hour, Go+GORM is still the right call. The ORM costs you throughput but
+not the language's memory advantage. This is the opposite conclusion from
+the API path, where memory matters less and throughput dominates.
 
 **Reading:** Go is 1.37× faster on throughput. The gap is smaller than the
 audit workload because this is DB-bound — most of each batch is Postgres
@@ -111,7 +134,12 @@ long-lived: you pay for that memory all month, not just per-request.
 
 | Implementation              | LOC | Notes                                            |
 |-----------------------------|----:|--------------------------------------------------|
-| Go audit                    | 144 | Plus 134 generated by sqlc                       |
+| Go audit (chi + sqlc + pgx) | 144 | Plus 134 generated by sqlc                       |
+| Go audit-gorm (Gin + GORM)  | 130 | No codegen; struct tags do the schema mapping    |
+| Go meter (raw pgx)          | 162 |                                                  |
+| Go meter-gorm               | 158 | GORM clauses for SKIP LOCKED + upsert            |
+| Go stream (net/http)        | 105 |                                                  |
+| Go stream-gin               | 105 | Same logic, Gin's `c.Stream` for loop semantics  |
 | TS audit-drizzle (pgjs)     | 94  | Includes 29-line schema.ts                       |
 | TS audit-drizzle (Bun.sql)  | 95  | Same schema, one-line driver swap                |
 | TS audit-pg                 | 57  |                                                  |
@@ -119,7 +147,6 @@ long-lived: you pay for that memory all month, not just per-request.
 | TS audit-postgresjs         | 53  | Most concise; tagged-template SQL is clean       |
 | Go stream                   | 105 |                                                  |
 | TS stream                   | 64  |                                                  |
-| Go meter                    | 162 |                                                  |
 | TS meter (postgres.js)      | 77  |                                                  |
 | TS meter (Bun.sql)          | 81  | Same shape; `WHERE id IN ${sql(ids)}` for ANY    |
 
@@ -167,27 +194,34 @@ audit number.
   advantage that compounds over time.
 - For ergonomics, TS wins on LOC by ~50%. Drizzle is the worst choice in TS.
 
-**What I'd actually do, post-bench (revised after Bun.sql results):**
+**What I'd actually do, post-bench (revised after Bun.sql + GORM results):**
 
-1. Stay on Hono + Bun for `apps/api` and `apps/mcp`. Throughput is fine for
-   alpha and the LOC + shared-types story is real.
-2. **Drop Drizzle. Use `Bun.sql`.** This is now the highest-leverage change.
-   Bun.sql is the fastest TS option, the tightest-tail TS option, has zero
-   external deps, and is roughly tied with Drizzle on LOC despite needing
-   no schema-as-TS layer. It closes the gap to Go from 5.6× to 1.7× on the
-   audit hot path. (If you absolutely must keep Drizzle for ergonomic reasons,
-   at least switch its driver to `drizzle-orm/bun-sql` — 66% RPS for free.
-   But that still leaves you 2× behind raw Bun.sql.)
-3. **Write the metering worker in Go** — *still*. Even with Bun.sql closing
-   the throughput gap, Go uses 5× less RAM (16 MB vs 74 MB) on the
-   long-running worker, and the worker has no Better-Auth surface to fight.
-   Narrow contract, big economic win over a year of uptime. ~160 lines.
-4. Defer rewriting the rest of the API in Go unless (a) audit write rate
-   genuinely exceeds 4k rps in production, or (b) a Go hire wants to.
+1. **Stay on Hono + Bun for `apps/api` and `apps/mcp`.** The throughput is
+   fine for alpha and the LOC + shared-types story is real.
+2. **Drop Drizzle. Use `Bun.sql`.** Highest-leverage change on the TS side.
+   Fastest TS option, tightest tail, zero external deps, comparable LOC.
+   Closes the gap to Go from 5.6× to 1.7× on the audit hot path. (If a full
+   Drizzle removal is too disruptive, at minimum switch Drizzle's driver to
+   `drizzle-orm/bun-sql` — free 66% RPS for a one-line config change.)
+3. **Write the metering worker in Go.** Even GORM keeps the memory advantage
+   (17 MB vs 74–102 MB on TS), so the ORM-vs-raw choice matters less here
+   than on the API. Use raw pgx if you want the 1.34× throughput on top;
+   use GORM if it lowers the friction of writing the worker. Either way,
+   Go wins on the dimension that compounds (RAM × hours × months).
+4. **Do NOT rewrite the API in Go *with GORM*.** This is the new, important
+   finding: Go+GORM is slower than raw Bun.sql. A rewrite that lands on
+   the popular ORM is a quarter of work for a *negative* throughput result.
+   The only Go-on-the-API path that wins is `pgx` + hand-written SQL (or
+   `sqlc`) — and that's the discipline question, not the language question.
+   You're asking the team to write raw SQL in any language they choose;
+   pick the one with the smaller blast radius (TS).
+5. Defer rewriting the rest of the API in Go unless (a) audit write rate
+   genuinely exceeds 4k RPS in production, *and* (b) the team commits to
+   `sqlc` over GORM in writing.
 
-**The "drop Drizzle for Bun.sql" change is unambiguously good** — it's the
-fastest, lowest-LOC, zero-dep TS path with the tightest p95/max. There is no
-reason to keep Drizzle once Bun.sql exists for this workload shape.
+**The headline:** the perf gradient is "ORM vs no-ORM," not "Go vs TS." Once
+you accept that, the answer is "stay on Bun, drop the ORM, put the worker
+in Go." That is the answer the data supports — not "rewrite in Go."
 
 The investor's underlying instinct — "Go is the right shape for an infra
 runtime" — is correct in the workloads where it matters. The blanket "rewrite
@@ -202,10 +236,13 @@ docker compose up -d
 docker exec -i bench-pg psql -U bench -d bench < schema.sql
 
 # Build Go
-(cd go/audit  && go build -o /tmp/bench-go-audit .)
-(cd go/stream && go build -o /tmp/bench-go-stream .)
-(cd go/meter  && go build -o /tmp/bench-go-meter .)
-(cd bench     && go build -o /tmp/bench-sse-client sse-client.go)
+(cd go/audit       && go build -o /tmp/bench-go-audit .)
+(cd go/audit-gorm  && go build -o /tmp/bench-go-audit-gorm .)
+(cd go/stream      && go build -o /tmp/bench-go-stream .)
+(cd go/stream-gin  && go build -o /tmp/bench-go-stream-gin .)
+(cd go/meter       && go build -o /tmp/bench-go-meter .)
+(cd go/meter-gorm  && go build -o /tmp/bench-go-meter-gorm .)
+(cd bench          && go build -o /tmp/bench-sse-client sse-client.go)
 
 # Install TS
 for d in ts/audit-pg ts/audit-postgresjs ts/audit-drizzle ts/stream ts/meter; do
@@ -219,13 +256,16 @@ done
 ./bench/run-audit.sh ts-audit-drizzle        8091 bun run ts/audit-drizzle/src/index.ts
 ./bench/run-audit.sh ts-audit-bunsql         8095 bun run ts/audit-bunsql/src/index.ts
 ./bench/run-audit.sh ts-audit-drizzle-bunsql 8096 bun run ts/audit-drizzle-bunsql/src/index.ts
+./bench/run-audit.sh go-audit-gorm           8084 /tmp/bench-go-audit-gorm
 
 # Stream (each ~30s, holds 5000 conns)
-./bench/run-stream.sh go-stream 8182 5000 20 /tmp/bench-go-stream
-./bench/run-stream.sh ts-stream 8194 5000 20 bun run ts/stream/src/index.ts
+./bench/run-stream.sh go-stream     8182 5000 20 /tmp/bench-go-stream
+./bench/run-stream.sh go-stream-gin 8183 5000 20 /tmp/bench-go-stream-gin
+./bench/run-stream.sh ts-stream     8194 5000 20 bun run ts/stream/src/index.ts
 
 # Meter (each ~5s)
-./bench/run-meter.sh go-meter /tmp/bench-go-meter
+./bench/run-meter.sh go-meter        /tmp/bench-go-meter
+./bench/run-meter.sh go-meter-gorm   /tmp/bench-go-meter-gorm
 ./bench/run-meter.sh ts-meter        bun run ts/meter/src/index.ts
 ./bench/run-meter.sh ts-meter-bunsql bun run ts/meter-bunsql/src/index.ts
 ```
