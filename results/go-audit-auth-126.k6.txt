@@ -1,0 +1,142 @@
+
+         /\      Grafana   /‾‾/  
+    /\  /  \     |\  __   /  /   
+   /  \/    \    | |/ /  /   ‾‾\ 
+  /          \   |   (  |  (‾)  |
+ / __________ \  |_|\_\  \_____/ 
+
+
+     execution: local
+        script: /home/hashir/Development/Projects/Personal/steloit/bench-go-vs-ts/bench/audit-auth.js
+        output: -
+
+     scenarios: (100.00%) 1 scenario, 100 max VUs, 1m0s max duration (incl. graceful stop):
+              * audit: 100 looping VUs for 30s (gracefulStop: 30s)
+
+
+running (0m01.0s), 100/100 VUs, 4255 complete and 0 interrupted iterations
+audit   [   3% ] 100 VUs  01.0s/30s
+
+running (0m02.0s), 100/100 VUs, 8158 complete and 0 interrupted iterations
+audit   [   7% ] 100 VUs  02.0s/30s
+
+running (0m03.0s), 100/100 VUs, 12012 complete and 0 interrupted iterations
+audit   [  10% ] 100 VUs  03.0s/30s
+
+running (0m04.0s), 100/100 VUs, 16002 complete and 0 interrupted iterations
+audit   [  13% ] 100 VUs  04.0s/30s
+
+running (0m05.0s), 100/100 VUs, 19914 complete and 0 interrupted iterations
+audit   [  17% ] 100 VUs  05.0s/30s
+
+running (0m06.0s), 100/100 VUs, 23914 complete and 0 interrupted iterations
+audit   [  20% ] 100 VUs  06.0s/30s
+
+running (0m07.0s), 100/100 VUs, 27948 complete and 0 interrupted iterations
+audit   [  23% ] 100 VUs  07.0s/30s
+
+running (0m08.0s), 100/100 VUs, 31622 complete and 0 interrupted iterations
+audit   [  27% ] 100 VUs  08.0s/30s
+
+running (0m09.0s), 100/100 VUs, 35543 complete and 0 interrupted iterations
+audit   [  30% ] 100 VUs  09.0s/30s
+
+running (0m10.0s), 100/100 VUs, 39383 complete and 0 interrupted iterations
+audit   [  33% ] 100 VUs  10.0s/30s
+
+running (0m11.0s), 100/100 VUs, 42985 complete and 0 interrupted iterations
+audit   [  37% ] 100 VUs  11.0s/30s
+
+running (0m12.0s), 100/100 VUs, 45762 complete and 0 interrupted iterations
+audit   [  40% ] 100 VUs  12.0s/30s
+
+running (0m13.0s), 100/100 VUs, 49440 complete and 0 interrupted iterations
+audit   [  43% ] 100 VUs  13.0s/30s
+
+running (0m14.0s), 100/100 VUs, 53484 complete and 0 interrupted iterations
+audit   [  47% ] 100 VUs  14.0s/30s
+
+running (0m15.0s), 100/100 VUs, 57373 complete and 0 interrupted iterations
+audit   [  50% ] 100 VUs  15.0s/30s
+
+running (0m16.0s), 100/100 VUs, 61507 complete and 0 interrupted iterations
+audit   [  53% ] 100 VUs  16.0s/30s
+
+running (0m17.0s), 100/100 VUs, 65230 complete and 0 interrupted iterations
+audit   [  57% ] 100 VUs  17.0s/30s
+
+running (0m18.0s), 100/100 VUs, 69174 complete and 0 interrupted iterations
+audit   [  60% ] 100 VUs  18.0s/30s
+
+running (0m19.0s), 100/100 VUs, 73176 complete and 0 interrupted iterations
+audit   [  63% ] 100 VUs  19.0s/30s
+
+running (0m20.0s), 100/100 VUs, 76972 complete and 0 interrupted iterations
+audit   [  67% ] 100 VUs  20.0s/30s
+
+running (0m21.0s), 100/100 VUs, 80514 complete and 0 interrupted iterations
+audit   [  70% ] 100 VUs  21.0s/30s
+
+running (0m22.0s), 100/100 VUs, 84233 complete and 0 interrupted iterations
+audit   [  73% ] 100 VUs  22.0s/30s
+
+running (0m23.0s), 100/100 VUs, 87576 complete and 0 interrupted iterations
+audit   [  77% ] 100 VUs  23.0s/30s
+
+running (0m24.0s), 100/100 VUs, 90812 complete and 0 interrupted iterations
+audit   [  80% ] 100 VUs  24.0s/30s
+
+running (0m25.0s), 100/100 VUs, 94581 complete and 0 interrupted iterations
+audit   [  83% ] 100 VUs  25.0s/30s
+
+running (0m26.0s), 100/100 VUs, 98584 complete and 0 interrupted iterations
+audit   [  87% ] 100 VUs  26.0s/30s
+
+running (0m27.0s), 100/100 VUs, 102374 complete and 0 interrupted iterations
+audit   [  90% ] 100 VUs  27.0s/30s
+
+running (0m28.0s), 100/100 VUs, 106331 complete and 0 interrupted iterations
+audit   [  93% ] 100 VUs  28.0s/30s
+
+running (0m29.0s), 100/100 VUs, 110091 complete and 0 interrupted iterations
+audit   [  97% ] 100 VUs  29.0s/30s
+
+running (0m30.0s), 100/100 VUs, 114025 complete and 0 interrupted iterations
+audit   [ 100% ] 100 VUs  30.0s/30s
+
+
+  █ THRESHOLDS 
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 114218  3804.938229/s
+    checks_succeeded...: 100.00% 114218 out of 114218
+    checks_failed......: 0.00%   0 out of 114218
+
+    ✓ 2xx
+
+    HTTP
+    http_req_duration..............: avg=25.73ms min=2.93ms med=24.72ms max=138.05ms p(90)=33.83ms p(95)=37.89ms
+      { expected_response:true }...: avg=25.73ms min=2.93ms med=24.72ms max=138.05ms p(90)=33.83ms p(95)=37.89ms
+    http_req_failed................: 0.00%  0 out of 114218
+    http_reqs......................: 114218 3804.938229/s
+
+    EXECUTION
+    iteration_duration.............: avg=26.22ms min=3.39ms med=25.15ms max=138.53ms p(90)=34.45ms p(95)=38.66ms
+    iterations.....................: 114218 3804.938229/s
+    vus............................: 100    min=100         max=100
+    vus_max........................: 100    min=100         max=100
+
+    NETWORK
+    data_received..................: 29 MB  963 kB/s
+    data_sent......................: 27 MB  898 kB/s
+
+
+
+
+running (0m30.0s), 000/100 VUs, 114218 complete and 0 interrupted iterations
+audit ✓ [ 100% ] 100 VUs  30s
